@@ -1,0 +1,1 @@
+ torchrun --nproc_per_node=1 eval.py --checkpoint ./pretrained_checkpoint/sam_vit_l_0b3195.pth --model-type vit_l --output ./output/AKevl --eval --restore-model ./output/AKres/epoch_20.pth --visualize --visualize-output ./output/AKevl/eval0828

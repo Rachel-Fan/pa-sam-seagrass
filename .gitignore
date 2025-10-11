@@ -1,0 +1,10 @@
+# Ignore data, output, and pretrained_checkpoint folders
+data/
+output/
+pretrained_checkpoint/
+pa-sam-ggb/
+pa-sam-Hao/
+4Coutput/
+
+
+*.pyc
