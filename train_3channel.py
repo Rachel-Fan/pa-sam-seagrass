@@ -438,16 +438,23 @@ if __name__ == "__main__":
                  "im_ext": ".png",
                  "gt_ext": ".png"}
 
-    dataset_Alask_val = {"name": "Alaska",
+    dataset_Alaska_val = {"name": "Alaska",
+                 "im_dir": "./data/Alaska/Alaska/val/image",
+                 "gt_dir": "./data/Alaska/Alaska/val/index",
+                 "im_ext": ".png",
+                 "gt_ext": ".png"}
+
+    dataset_Alaska_test = {"name": "Alaska",
                  "im_dir": "./data/Alaska/Alaska/test/image",
                  "gt_dir": "./data/Alaska/Alaska/test/index",
                  "im_ext": ".png",
                  "gt_ext": ".png"}
-
+    
     # train_datasets = [dataset_dis, dataset_thin, dataset_fss, dataset_duts, dataset_duts_te, dataset_ecssd, dataset_msra]
     # valid_datasets = [dataset_dis_val, dataset_coift_val, dataset_hrsod_val, dataset_thin_val] 
     train_datasets = [dataset_Alaska];
-    valid_datasets = [dataset_Alask_val];
+    valid_datasets = [dataset_Alaska_val];
+    test_datasets = [dataset_Alaska_test];
  
     args = get_args_parser()
     net = MaskDecoderPA(args.model_type) 
