@@ -1,0 +1,13 @@
+INFO:root:world_size:1 rank:0 local_rank:0
+INFO:root:args: Namespace(batch_size_train=4, batch_size_valid=1, checkpoint='/path/to/sam_vit_l_0b3195.pth', device='cuda', dist_backend='nccl', dist_url='env://', distributed=True, eval=False, eval_thr=0.0, find_unused_params=False, gpu=0, gt_dir='./data/2025/All/index', im_dir='./data/2025/All/image', input_size=[512, 512], learning_rate=0.001, local_rank=0, logfile='./runs/exp_rgb/train.log', lr_drop_epoch=10, max_epoch_num=21, model_save_fre=4, model_type='vit_l', output='./runs/exp_rgb', rank=0, restore_model=None, seed=42, start_epoch=0, visualize=False, world_size=1)
+
+INFO:root:--- create training dataloader ---
+INFO:root:world_size:1 rank:0 local_rank:0
+INFO:root:args: Namespace(batch_size_train=4, batch_size_valid=1, checkpoint='/path/to/sam_vit_l_0b3195.pth', device='cuda', dist_backend='nccl', dist_url='env://', distributed=True, eval=False, eval_thr=0.0, find_unused_params=False, gpu=0, gt_dir='./data/2025/All/index', im_ch4_dir='./data/2025/All/glcm', im_dir='./data/2025/All/image', input_size=[512, 512], learning_rate=0.001, local_rank=0, logfile='./runs/exp_rgb/train.log', lr_drop_epoch=10, max_epoch_num=21, model_save_fre=4, model_type='vit_l', output='./runs/exp_rgb', rank=0, restore_model=None, seed=42, start_epoch=0, visualize=False, world_size=1)
+
+INFO:root:--- create training dataloader ---
+INFO:root:8730  train dataloaders created
+INFO:root:--- create valid dataloader ---
+INFO:root:1  valid dataloaders created
+INFO:root:--- create test dataloader ---
+INFO:root:1  test dataloaders created

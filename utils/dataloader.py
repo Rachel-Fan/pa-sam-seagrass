@@ -1258,6 +1258,11 @@ from torchvision.transforms.functional import normalize
 import torch.nn.functional as F
 from torch.utils.data.distributed import DistributedSampler
 
+from skimage.transform import resize as sk_resize  # 文件顶部确保有这行
+
+
+
+
 #### --------------------- dataloader online ---------------------####
 
 def get_im_gt_name_dict(datasets, flag='valid'):
@@ -1507,7 +1512,20 @@ class OnlineDataset(Dataset):
         
         # Ensure im_ch4 is single-channel
         if len(im_ch4.shape) > 2:
-            im_ch4 = im_ch4[:, :, 0]  
+            im_ch4 = im_ch4[:, :, 0]
+
+        # —— 新增：尺寸 & 类型对齐 —— #
+        H, W = im.shape[:2]
+        h4, w4 = im_ch4.shape[:2]
+        if (h4 != H) or (w4 != W):
+            # 用最近邻，不产生小数，避免标签类纹理被平滑
+            im_ch4 = sk_resize(
+                im_ch4, (H, W), order=0, preserve_range=True, anti_aliasing=False
+            ).astype(im.dtype)
+        else:
+            # 保证 dtype 与 RGB 一致（通常 uint8）
+            if im_ch4.dtype != im.dtype:
+                im_ch4 = im_ch4.astype(im.dtype)
 
         # Optionally replace Red channel with GLCM channel
         if self.replace_red_with_glcm:
