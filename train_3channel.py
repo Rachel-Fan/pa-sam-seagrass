@@ -43,6 +43,8 @@ import warnings
 warnings.filterwarnings("ignore")
 
 
+
+
 # =========================
 # Args
 # =========================
@@ -58,16 +60,31 @@ def get_args_parser():
     p.add_argument("--device", type=str, default="cuda", choices=["cuda","cpu"])
 
     # data roots + splits
-    p.add_argument("--im_dir", type=str, default="./data/2025/All/image")
-    p.add_argument("--gt_dir", type=str, default="./data/2025/All/index")
-    p.add_argument("--im_ch4_dir", type=str, default="./data/2025/All/glcm")
-    p.add_argument("--train_list", type=str, default="./data/2025/All/splits/all_train.txt")
-    p.add_argument("--valid_list", type=str, default="./data/2025/All/splits/all_valid.txt")
-    p.add_argument("--test_list",  type=str, default="./data/2025/All/splits/all_test.txt")
+    # p.add_argument("--im_dir", type=str, default="./data/2025/All/image")
+    # p.add_argument("--gt_dir", type=str, default="./data/2025/All/index")
+    # p.add_argument("--im_ch4_dir", type=str, default="./data/2025/All/glcm")
+    # p.add_argument("--train_list", type=str, default="./data/2025/All/splits/all_train.txt")
+    # p.add_argument("--valid_list", type=str, default="./data/2025/All/splits/all_valid.txt")
+    # p.add_argument("--test_list",  type=str, default="./data/2025/All/splits/all_test.txt")
+
+    p.add_argument("--train_im_dir", type=str, required=True, help="XX/train/image")
+    p.add_argument("--train_gt_dir", type=str, required=True, help="XX/train/index")
+    p.add_argument("--valid_im_dir", type=str, required=True, help="XX/valid/image")
+    p.add_argument("--valid_gt_dir", type=str, required=True, help="XX/valid/index")
+
+    p.add_argument("--test_im_dir",  type=str, default=None, help="XX/test/image (optional)")
+    p.add_argument("--test_gt_dir",  type=str, default=None, help="XX/test/index (optional)")
+
+    p.add_argument("--im_ext", type=str, default=".png")
+    p.add_argument("--gt_ext", type=str, default=".png")
+
+    p.add_argument("--im_ch4_dir", type=str, default=None,
+               help="optional 4th-channel folder; leave None if unused")
+
 
     # switch: RGB or GGB
-    p.add_argument("--use_ggb", action="store_true",
-                   help="If set, replace RED with GLCM (GGB). Otherwise use pure RGB.")
+    # p.add_argument("--use_ggb", action="store_true", default= F
+    #                help="If set, replace RED with GLCM (GGB). Otherwise use pure RGB.")
     
     # —— 三步法开关 ——
     p.add_argument("--fg-sampler", action="store_true",
@@ -212,6 +229,10 @@ def collate_fixed(batch):
 def _read_filenames(list_path):
     """Read one-filename-per-line list."""
     files = []
+    # 如果文件不存在，返回空列表（而不是报错）
+    if not os.path.exists(list_path):
+        logging.warning(f"[split] 文件不存在，返回空列表: {list_path}")
+        return files
     with open(list_path, "r", encoding="utf-8") as f:
         for line in f:
             fn = line.strip()
@@ -240,6 +261,26 @@ def _build_name_im_gt_entry(name, im_dir, gt_dir, ch4_dir, im_ext, gt_ext, filen
         "gt_ext": gt_ext,
         "im_ch4_path": ch4_paths,   # <- always present
     }
+
+# 2025/11/11
+def _list_files_with_ext(d: str, ext: str):
+    if d is None: return []
+    if not os.path.isdir(d): return []
+    files = [f for f in os.listdir(d) if f.lower().endswith(ext.lower())]
+    files.sort()
+    return files
+
+def _discover_filenames_by_intersection(im_dir: str, gt_dir: str, im_ext: str, gt_ext: str):
+    """
+    基于“同名文件”的交集来对齐 image / mask：
+    例：image 有 001.png, 002.png；mask 有 001.png, 003.png -> 只取 001.png
+    返回：按文件名排序的列表（包含扩展名）
+    """
+    ims = set(_list_files_with_ext(im_dir, im_ext))
+    gts = set(_list_files_with_ext(gt_dir, gt_ext))
+    common = sorted(list(ims & gts))
+    return common
+
 
 
 # =========================
@@ -300,6 +341,11 @@ def build_loader_from_split(args, list_path, transforms, batch_size, training, r
     filenames = _read_filenames(list_path)
     # 打印规模（自检）
     logging.info(f"[split] {os.path.basename(list_path)} -> {len(filenames)} samples")
+    
+    # 如果文件列表为空，返回 None（调用者需要处理）
+    if len(filenames) == 0:
+        logging.warning(f"[split] 文件列表为空，跳过: {list_path}")
+        return None, None
 
     entry = _build_name_im_gt_entry(
         name="All",
@@ -311,6 +357,16 @@ def build_loader_from_split(args, list_path, transforms, batch_size, training, r
         filenames=filenames,
         use_glcm=replace_red_with_glcm
     )
+
+    # ---- robust fallback for ch4 ---- 2025/11/11
+    im_paths = entry.get("im_path", [])
+    ch4_paths = entry.get("im_ch4_path", None)
+
+    # 条件：不存在 / 为 None / 长度不等 / 含 None -> 统一回退为 im_path
+    if (not ch4_paths) or (len(ch4_paths) != len(im_paths)) or any(p is None for p in ch4_paths):
+        entry["im_ch4_path"] = list(im_paths)
+    # ---------------------------------
+
     dataset = OnlineDataset(
         name_im_gt_list=[entry],
         transform=transforms,
@@ -378,6 +434,105 @@ def build_loader_from_split(args, list_path, transforms, batch_size, training, r
                 persistent_workers=False,
             )
         return loader, dataset
+    
+def build_loader_from_dirs(args, im_dir, gt_dir, transforms, batch_size, training, replace_red_with_glcm):
+    """
+    不读 split 列表，直接扫目录，按“同名图像/标注”的交集构建 DataLoader。
+    """
+    filenames = _discover_filenames_by_intersection(im_dir, gt_dir, args.im_ext, args.gt_ext)
+    logging.info(f"[dir] {im_dir} / {gt_dir} -> {len(filenames)} samples")
+    if len(filenames) == 0:
+        logging.warning(f"[dir] No paired files found under: {im_dir} and {gt_dir}")
+        return None, None
+
+    entry = _build_name_im_gt_entry(
+        name=os.path.basename(os.path.dirname(im_dir)) or "dataset",
+        im_dir=im_dir,
+        gt_dir=gt_dir,
+        ch4_dir=args.im_ch4_dir,
+        im_ext=args.im_ext,
+        gt_ext=args.gt_ext,
+        filenames=filenames,
+        use_glcm=False
+    )
+
+    # ---- robust fallback for ch4 ----
+    im_paths = entry.get("im_path", [])
+    ch4_paths = entry.get("im_ch4_path", None)
+    # 条件：不存在 / 为 None / 长度不等 / 含 None -> 统一回退为 im_path（从而不传 None）
+    if (not ch4_paths) or (len(ch4_paths) != len(im_paths)) or any(p is None for p in ch4_paths):
+        entry["im_ch4_path"] = list(im_paths)
+    # ---------------------------------
+
+    dataset = OnlineDataset(
+        name_im_gt_list=[entry],
+        transform=transforms,
+        eval_ori_resolution=not training,
+        replace_red_with_glcm=replace_red_with_glcm
+    )
+
+
+
+    # 与原 build_loader_from_split 的 DDP/采样器逻辑一致 2025/11/11
+    if training:
+        num_workers = 2 if batch_size <= 4 else (4 if batch_size <= 8 else 8)
+        if getattr(args, "fg_sampler", False):
+            loader, pos_weight = _build_fg_weighted_loader(dataset, batch_size=batch_size, num_workers=num_workers)
+            dataset._pos_weight = pos_weight
+            return loader, dataset
+        else:
+            if _use_ddp():
+                sampler = DistributedSampler(dataset, shuffle=True)
+                loader = DataLoader(
+                    dataset,
+                    batch_size=batch_size,
+                    sampler=sampler,
+                    drop_last=True,
+                    num_workers=num_workers,
+                    collate_fn=collate_fixed,
+                    pin_memory=False,
+                    persistent_workers=False if num_workers > 0 else False,
+                )
+            else:
+                loader = DataLoader(
+                    dataset,
+                    batch_size=batch_size,
+                    shuffle=True,
+                    drop_last=True,
+                    num_workers=num_workers,
+                    collate_fn=collate_fixed,
+                    pin_memory=False,
+                    persistent_workers=False if num_workers > 0 else False,
+                )
+            dataset._pos_weight = 1.0
+            return loader, dataset
+    else:
+        num_workers = 1
+        if _use_ddp():
+            sampler = DistributedSampler(dataset, shuffle=False)
+            loader = DataLoader(
+                dataset,
+                batch_size=batch_size,
+                sampler=sampler,
+                drop_last=False,
+                num_workers=num_workers,
+                collate_fn=collate_fixed, 
+                pin_memory=False,
+                persistent_workers=False,
+            )
+        else:
+            loader = DataLoader(
+                dataset,
+                batch_size=batch_size,
+                shuffle=False,
+                drop_last=False,
+                num_workers=num_workers,
+                collate_fn=collate_fixed, 
+                pin_memory=False,
+                persistent_workers=False,
+            )
+        return loader, dataset
+
 
 import numpy as np
 from torch.utils.data import WeightedRandomSampler
@@ -617,13 +772,15 @@ def train_one_epoch(args, pa_ddp, sam_ddp, optimizer, train_loader, print_fn):
             # 你的原始 PA 损失口径（不改）
             loss_mask, loss_dice = loss_masks_whole(logits, gts_t/255.0, len(logits))
             loss = loss_mask + loss_dice
-            loss_mask_final, loss_dice_final = loss_masks_whole_uncertain(None, logits, gts_t/255.0, None, len(logits))
-            loss = loss + (loss_mask_final + loss_dice_final)
-            loss_uncertain_map, _ = loss_uncertain(None, gts_t)
-            loss = loss + loss_uncertain_map
+            # 如果 coarse_masks 和 uncertain_map 不可用，跳过这些损失
+            # loss_mask_final, loss_dice_final = loss_masks_whole_uncertain(None, logits, gts_t/255.0, None, len(logits))
+            # loss = loss + (loss_mask_final + loss_dice_final)
+            # loss_uncertain_map, _ = loss_uncertain(None, gts_t)
+            # loss = loss + loss_uncertain_map
             loss_dict = {"loss_mask": loss_mask, "loss_dice": loss_dice,
-                        "loss_mask_final": loss_mask_final, "loss_dice_final": loss_dice_final,
-                        "loss_uncertain_map": loss_uncertain_map}
+                        "loss_mask_final": torch.tensor(0.0, device=loss.device), 
+                        "loss_dice_final": torch.tensor(0.0, device=loss.device),
+                        "loss_uncertain_map": torch.tensor(0.0, device=loss.device)}
         else:
             # 我们的组合损失（BCE/Focal + Dice + 边界加权）
             loss = combo_criterion(logits, gts_t)
@@ -643,45 +800,222 @@ def train_one_epoch(args, pa_ddp, sam_ddp, optimizer, train_loader, print_fn):
     return {k: m.global_avg for k, m in metric_logger.meters.items() if m.count > 0}
 
 
+# @torch.no_grad()
+# def evaluate(args, pa_ddp, sam_ddp, valid_loader, print_fn=print):
+#     pa_ddp.eval()
+#     sam_ddp.eval()
+
+#     thr = args.eval_thr
+#     total_iou = 0.0
+#     total_biou = 0.0
+#     n = 0
+
+#     def iou_per_image(p, g, eps=1e-6):
+#         if g.sum().item() == 0 and p.sum().item() == 0:
+#             return 1.0
+#         inter = (p & g).sum().item()
+#         union = (p | g).sum().item()
+#         if union <= 0: return 0.0
+#         return inter / (union + eps)
+
+#     for sample in valid_loader:
+#         imgs_t = sample["image"].to(args.device, non_blocking=True)
+#         gts_t  = sample["label"].to(args.device, non_blocking=True)
+#         if gts_t.dim() == 3: gts_t = gts_t.unsqueeze(1)
+
+#         imgs_np = imgs_t.permute(0,2,3,1).cpu().numpy()
+#         labels_box = misc.masks_to_boxes(gts_t[:,0,:,:])
+
+#         batched_input = []
+#         for b in range(len(imgs_np)):
+#             d = {}
+#             input_image = torch.as_tensor(imgs_np[b].astype(np.uint8), device=sam_ddp.device).permute(2,0,1).contiguous()
+#             d["image"] = input_image
+#             d["boxes"] = labels_box[b:b+1]  # fixed prompt for eval
+#             d["original_size"] = imgs_np[b].shape[:2]
+#             d["label"] = gts_t[b:b+1]
+#             batched_input.append(d)
+
+#         enc, image_pe, sparse_e, dense_e, image_record, input_images, interm = _sam_forward_for_pa(sam_ddp, batched_input)
+
+#         out = pa_ddp(
+#             image_embeddings=enc,
+#             image_pe=image_pe,
+#             sparse_prompt_embeddings=sparse_e,
+#             dense_prompt_embeddings=dense_e,
+#             multimask_output=False,
+#             interm_embeddings=interm,
+#             image_record=image_record,
+#             prompt_encoder=(sam_ddp.module.prompt_encoder if hasattr(sam_ddp, "module") else sam_ddp.prompt_encoder),
+
+#             input_images=input_images,
+#         )
+
+#         # 取 logits（final -> refined -> coarse -> masks_sam）
+#         logits = None
+#         if isinstance(out, (list, tuple)) and len(out) > 0:
+#             for idx in [3,5,4,0]:
+#                 if idx < len(out) and torch.is_tensor(out[idx]):
+#                     logits = out[idx]; break
+#             if logits is None and torch.is_tensor(out[0]):
+#                 logits = out[0]
+#         elif torch.is_tensor(out):
+#             logits = out
+#         elif isinstance(out, dict):
+#             for k in ["logits","final_masks","refined_masks","coarse_masks","masks","mask_logits","low_res_logits","low_res_masks"]:
+#                 if k in out and torch.is_tensor(out[k]):
+#                     logits = out[k]; break
+#         if logits is None:
+#             raise RuntimeError("Cannot extract logits from PA output.")
+
+#         if logits.dim() == 3: logits = logits.unsqueeze(1)
+#         if logits.shape[-2:] != gts_t.shape[-2:]:
+#             logits = F.interpolate(logits, size=gts_t.shape[-2:], mode="bilinear", align_corners=False)
+
+#         pred = (logits > thr).to(torch.bool)
+#         gt   = (gts_t > 0.5).to(torch.bool)
+
+#         B = pred.shape[0]
+#         for b in range(B):
+#             iou = iou_per_image(pred[b,0], gt[b,0])
+#             total_iou += float(iou)
+#             total_biou += float(iou)  # placeholder for boundary IoU
+#             n += 1
+
+#     mean_iou = total_iou / max(1,n)
+#     mean_biou = total_biou / max(1,n)
+#     print_fn(f"============================\nAveraged stats: val_iou_0: {mean_iou:.4f}  val_boundary_iou_0: {mean_biou:.4f}")
+#     return {"val_iou_0": mean_iou, "val_boundary_iou_0": mean_biou}
+
+#2025/11/11
+def _pixel_metrics(pred_bin: torch.Tensor, tgt_bin: torch.Tensor, eps: float = 1e-6):
+    """
+    pred_bin, tgt_bin: float/bool tensor in shape [B,1,H,W] on any device, in {0,1}
+    return: dict with per-batch mean of accuracy/precision/recall/dice (torch.float, on pred.device)
+    """
+    if pred_bin.shape != tgt_bin.shape:
+        pred_bin = F.interpolate(pred_bin, size=tgt_bin.shape[-2:], mode="bilinear", align_corners=False)
+        pred_bin = (pred_bin > 0.5).float()
+
+    pred_bin = pred_bin.float()
+    tgt_bin  = (tgt_bin > 0.5).float()
+
+    # 按像素统计
+    tp = (pred_bin * tgt_bin).sum(dim=(1,2,3))
+    fp = (pred_bin * (1.0 - tgt_bin)).sum(dim=(1,2,3))
+    fn = ((1.0 - pred_bin) * tgt_bin).sum(dim=(1,2,3))
+    tn = ((1.0 - pred_bin) * (1.0 - tgt_bin)).sum(dim=(1,2,3))
+
+    precision = (tp / (tp + fp + eps)).mean()
+    recall    = (tp / (tp + fn + eps)).mean()
+    dice      = ((2 * tp) / (2 * tp + fp + fn + eps)).mean()
+    accuracy  = ((tp + tn) / (tp + tn + fp + fn + eps)).mean()
+    return {
+        "precision": precision,
+        "recall": recall,
+        "dice": dice,
+        "accuracy": accuracy,
+    }
+
+def _hausdorff_per_batch(pred_bin: torch.Tensor, tgt_bin: torch.Tensor) -> torch.Tensor:
+    """
+    计算 batch 内每个样本的对称 Hausdorff 距离（像素单位），返回其平均值（torch.float, device 与输入一致）。
+    - 仅用 PyTorch，无第三方依赖；
+    - 取“边界”像素集合来计算距离，更符合轮廓几何误差；
+    - 若某一侧完全没有前景/边界，则回退为图像对角线长度，避免 NaN。
+    """
+    # 尺寸对齐 & 二值化到 {0,1}
+    if pred_bin.shape != tgt_bin.shape:
+        pred_bin = F.interpolate(pred_bin, size=tgt_bin.shape[-2:], mode="bilinear", align_corners=False)
+    pred_bin = (pred_bin > 0.5).float()
+    tgt_bin  = (tgt_bin  > 0.5).float()
+
+    def _edges_bool(m01: torch.Tensor, k: int = 3) -> torch.Tensor:
+        # m01: [H,W] 0/1 float，返回 bool 边界图
+        dil = F.max_pool2d(m01.unsqueeze(0).unsqueeze(0), kernel_size=k, stride=1, padding=k//2).squeeze(0).squeeze(0)
+        ero = 1 - F.max_pool2d((1 - m01).unsqueeze(0).unsqueeze(0), kernel_size=k, stride=1, padding=k//2).squeeze(0).squeeze(0)
+        edge = (dil - ero).clamp(0, 1)
+        return (edge > 0)
+
+    def _coords_from_mask(m_bool: torch.Tensor) -> torch.Tensor | None:
+        # m_bool: [H,W] bool，返回 [N,2] (y,x) float CPU tensor；空则 None
+        ys, xs = torch.where(m_bool)
+        if ys.numel() == 0:
+            return None
+        return torch.stack([ys, xs], dim=1).float().cpu()
+
+    B = pred_bin.shape[0]
+    vals = []
+    for b in range(B):
+        pb = pred_bin[b, 0]  # [H,W] float
+        gb = tgt_bin[b, 0]
+
+        # 先取边界点；没有边界就退回前景点；都没有则定义为 0
+        p_edge = _edges_bool(pb)
+        g_edge = _edges_bool(gb)
+
+        P = _coords_from_mask(p_edge)
+        G = _coords_from_mask(g_edge)
+        if P is None:
+            P = _coords_from_mask(pb > 0.5)
+        if G is None:
+            G = _coords_from_mask(gb > 0.5)
+
+        if P is None and G is None:
+            vals.append(0.0)
+            continue
+
+        if P is None or G is None:
+            H, W = pb.shape
+            vals.append(float((H * H + W * W) ** 0.5))
+            continue
+
+        # 用 CPU 计算距离，避免显存抖动
+        with torch.no_grad():
+            D = torch.cdist(P, G, p=2)  # [Np, Ng]
+            if D.numel() == 0:
+                H, W = pb.shape
+                vals.append(float((H * H + W * W) ** 0.5))
+            else:
+                dir_pg = D.min(dim=1).values.max().item()
+                dir_gp = D.min(dim=0).values.max().item()
+                vals.append(max(dir_pg, dir_gp))
+
+    mean_hd = float(np.mean(vals)) if len(vals) > 0 else 0.0
+    return torch.tensor(mean_hd, dtype=torch.float32, device=pred_bin.device)
+
+
 @torch.no_grad()
-def evaluate(args, pa_ddp, sam_ddp, valid_loader, print_fn=print):
-    pa_ddp.eval()
-    sam_ddp.eval()
+def evaluate(args, pa, sam, valid_loader, visualize=False, print_fn=print):
+    pa.eval()
+    sam.eval()
 
-    thr = args.eval_thr
-    total_iou = 0.0
-    total_biou = 0.0
-    n = 0
+    metric_logger = misc.MetricLogger(delimiter="  ")
+    print_fn(f"Validating...  total batches: {len(valid_loader)}")
 
-    def iou_per_image(p, g, eps=1e-6):
-        if g.sum().item() == 0 and p.sum().item() == 0:
-            return 1.0
-        inter = (p & g).sum().item()
-        union = (p | g).sum().item()
-        if union <= 0: return 0.0
-        return inter / (union + eps)
+    for data_val in metric_logger.log_every(valid_loader, 50, logger=args.logfile, print_func=print_fn):
+        imgs_t  = data_val["image"].to(args.device, non_blocking=True)
+        gts_t   = data_val["label"].to(args.device, non_blocking=True)
+        if gts_t.dim() == 3:
+            gts_t = gts_t.unsqueeze(1)
 
-    for sample in valid_loader:
-        imgs_t = sample["image"].to(args.device, non_blocking=True)
-        gts_t  = sample["label"].to(args.device, non_blocking=True)
-        if gts_t.dim() == 3: gts_t = gts_t.unsqueeze(1)
-
-        imgs_np = imgs_t.permute(0,2,3,1).cpu().numpy()
+        imgs_np = imgs_t.permute(0, 2, 3, 1).cpu().numpy()
         labels_box = misc.masks_to_boxes(gts_t[:,0,:,:])
 
+        # === SAM 前向 ===
         batched_input = []
         for b in range(len(imgs_np)):
-            d = {}
-            input_image = torch.as_tensor(imgs_np[b].astype(np.uint8), device=sam_ddp.device).permute(2,0,1).contiguous()
-            d["image"] = input_image
-            d["boxes"] = labels_box[b:b+1]  # fixed prompt for eval
-            d["original_size"] = imgs_np[b].shape[:2]
-            d["label"] = gts_t[b:b+1]
+            d = {
+                "image": torch.as_tensor(imgs_np[b].astype(np.uint8), device=sam.device).permute(2,0,1).contiguous(),
+                "boxes": labels_box[b:b+1],
+                "original_size": imgs_np[b].shape[:2],
+                "label": gts_t[b:b+1],
+            }
             batched_input.append(d)
 
-        enc, image_pe, sparse_e, dense_e, image_record, input_images, interm = _sam_forward_for_pa(sam_ddp, batched_input)
+        enc, image_pe, sparse_e, dense_e, image_record, input_images, interm = _sam_forward_for_pa(sam, batched_input)
 
-        out = pa_ddp(
+        out = pa(
             image_embeddings=enc,
             image_pe=image_pe,
             sparse_prompt_embeddings=sparse_e,
@@ -689,46 +1023,57 @@ def evaluate(args, pa_ddp, sam_ddp, valid_loader, print_fn=print):
             multimask_output=False,
             interm_embeddings=interm,
             image_record=image_record,
-            prompt_encoder=(sam_ddp.module.prompt_encoder if hasattr(sam_ddp, "module") else sam_ddp.prompt_encoder),
-
+            prompt_encoder=(sam.module.prompt_encoder if hasattr(sam, "module") else sam.prompt_encoder),
             input_images=input_images,
         )
 
-        # 取 logits（final -> refined -> coarse -> masks_sam）
+        # 取 logits
         logits = None
         if isinstance(out, (list, tuple)) and len(out) > 0:
-            for idx in [3,5,4,0]:
+            for idx in [3, 5, 4, 0]:
                 if idx < len(out) and torch.is_tensor(out[idx]):
                     logits = out[idx]; break
-            if logits is None and torch.is_tensor(out[0]):
-                logits = out[0]
+            if logits is None and torch.is_tensor(out[0]): logits = out[0]
         elif torch.is_tensor(out):
             logits = out
         elif isinstance(out, dict):
-            for k in ["logits","final_masks","refined_masks","coarse_masks","masks","mask_logits","low_res_logits","low_res_masks"]:
+            for k in ["logits","final_masks","refined_masks","coarse_masks","masks","mask_logits"]:
                 if k in out and torch.is_tensor(out[k]):
                     logits = out[k]; break
+
         if logits is None:
             raise RuntimeError("Cannot extract logits from PA output.")
-
         if logits.dim() == 3: logits = logits.unsqueeze(1)
         if logits.shape[-2:] != gts_t.shape[-2:]:
             logits = F.interpolate(logits, size=gts_t.shape[-2:], mode="bilinear", align_corners=False)
 
-        pred = (logits > thr).to(torch.bool)
-        gt   = (gts_t > 0.5).to(torch.bool)
+        # === 计算各类指标 ===
+        pred_bin = (logits > 0).float()
+        tgt_bin  = (gts_t > 0.5).float()
 
-        B = pred.shape[0]
-        for b in range(B):
-            iou = iou_per_image(pred[b,0], gt[b,0])
-            total_iou += float(iou)
-            total_biou += float(iou)  # placeholder for boundary IoU
-            n += 1
+        iou_val = _batch_iou_from_logits(logits, gts_t)
+        boundary_iou_val = iou_val  # 如果你想实现真正 boundary iou，可换函数
+        pix = _pixel_metrics(pred_bin, tgt_bin)
+        hd = _hausdorff_per_batch(pred_bin, tgt_bin)
 
-    mean_iou = total_iou / max(1,n)
-    mean_biou = total_biou / max(1,n)
-    print_fn(f"============================\nAveraged stats: val_iou_0: {mean_iou:.4f}  val_boundary_iou_0: {mean_biou:.4f}")
-    return {"val_iou_0": mean_iou, "val_boundary_iou_0": mean_biou}
+        loss_dict = {
+            "val_iou_0": torch.tensor(iou_val, device=logits.device),
+            "val_boundary_iou_0": torch.tensor(boundary_iou_val, device=logits.device),
+            "accuracy": pix["accuracy"],
+            "dice": pix["dice"],
+            "precision": pix["precision"],
+            "recall": pix["recall"],
+            "hausdorff": hd,
+        }
+        loss_dict_red = misc.reduce_dict(loss_dict)
+        metric_logger.update(**loss_dict_red)
+
+    print_fn("============================")
+    metric_logger.synchronize_between_processes()
+    print_fn("Averaged stats:", metric_logger)
+    return {k: m.global_avg for k, m in metric_logger.meters.items() if m.count > 0}
+
+
 
 # 放在文件顶部或 main_worker 前
 def maybe_wrap_ddp(module, device, gpu, find_unused=False):
@@ -766,35 +1111,80 @@ def main_worker(args):
     # 用你原有的变换（与 create_dataloaders 一致）
     train_tfms = None
     valid_tfms = None
-    # 训练：RandomHFlip + LargeScaleJitter
-    train_transform = torch.nn.Sequential()  # not used; we'll pass Compose list directly via OnlineDataset
-    train_transform = None
-    train_loader, _ = build_loader_from_split(
+    # # 训练：RandomHFlip + LargeScaleJitter
+    # train_transform = torch.nn.Sequential()  # not used; we'll pass Compose list directly via OnlineDataset
+    # train_transform = None
+    # train_loader, _ = build_loader_from_split(
+    #     args,
+    #     args.train_list,
+    #     transforms = transforms.Compose([RandomHFlip(), LargeScaleJitter()]),
+    #     batch_size = args.batch_size_train,
+    #     training = True,
+    #     replace_red_with_glcm = False
+    # )
+    # # 验证：Resize
+    # valid_loader, _ = build_loader_from_split(
+    #     args,
+    #     args.valid_list,
+    #     transforms = transforms.Compose([Resize(args.input_size)]),
+    #     batch_size = args.batch_size_valid,
+    #     training = False,
+    #     replace_red_with_glcm = False
+    # )
+    # # 可选：测试集（如评估需要）
+    # test_loader, _ = build_loader_from_split(
+    #     args,
+    #     args.test_list,
+    #     transforms = transforms.Compose([Resize(args.input_size)]),
+    #     batch_size = args.batch_size_valid,
+    #     training = False,
+    #     replace_red_with_glcm = False
+    # )
+
+    # 训练：RandomHFlip + LargeScaleJitter 2025/11/11
+    train_loader, _ = build_loader_from_dirs(
         args,
-        args.train_list,
-        transforms = transforms.Compose([RandomHFlip(), LargeScaleJitter()]),
-        batch_size = args.batch_size_train,
-        training = True,
-        replace_red_with_glcm = args.use_ggb
+        args.train_im_dir, args.train_gt_dir,
+        transforms=transforms.Compose([RandomHFlip(), LargeScaleJitter()]),
+        batch_size=args.batch_size_train,
+        training=True,
+        replace_red_with_glcm=False
     )
+
     # 验证：Resize
-    valid_loader, _ = build_loader_from_split(
+    valid_loader, _ = build_loader_from_dirs(
         args,
-        args.valid_list,
-        transforms = transforms.Compose([Resize(args.input_size)]),
-        batch_size = args.batch_size_valid,
-        training = False,
-        replace_red_with_glcm = args.use_ggb
+        args.valid_im_dir, args.valid_gt_dir,
+        transforms=transforms.Compose([Resize(args.input_size)]),
+        batch_size=args.batch_size_valid,
+        training=False,
+        replace_red_with_glcm=False
     )
-    # 可选：测试集（如评估需要）
-    test_loader, _ = build_loader_from_split(
-        args,
-        args.test_list,
-        transforms = transforms.Compose([Resize(args.input_size)]),
-        batch_size = args.batch_size_valid,
-        training = False,
-        replace_red_with_glcm = args.use_ggb
-    )
+
+    # 测试（可选）
+    test_loader = None
+    if args.test_im_dir and args.test_gt_dir:
+        test_loader, _ = build_loader_from_dirs(
+            args,
+            args.test_im_dir, args.test_gt_dir,
+            transforms=transforms.Compose([Resize(args.input_size)]),
+            batch_size=args.batch_size_valid,
+            training=False,
+            replace_red_with_glcm=False
+        )
+
+    
+    # 检查必需的 loader 是否存在
+    if train_loader is None:
+        raise ValueError(
+            f"训练集目录没有成对样本（按同名对齐）: {args.train_im_dir} / {args.train_gt_dir}"
+        )
+    if valid_loader is None:
+        raise ValueError(
+            f"验证集目录没有成对样本（按同名对齐）: {args.valid_im_dir} / {args.valid_gt_dir}"
+        )
+
+    # test_loader 可以为 None（可选）
 
     # ===== Models =====
     '''
@@ -874,7 +1264,8 @@ def main_worker(args):
         if (epoch % args.model_save_fre) == 0:
             save_p = os.path.join(args.output, f"epoch_{epoch}.pth")
             if misc.is_main_process():
-                torch.save(pa.module.state_dict(), save_p)
+                # 使用 pa_wo_ddp 而不是 pa.module（兼容单 GPU 和 DDP）
+                torch.save(pa_wo_ddp.state_dict(), save_p)
                 print_fn(f"Saving regular checkpoint: {save_p}")
             last_epoch_ckpt = save_p
 
@@ -882,7 +1273,8 @@ def main_worker(args):
         if mean_iou is not None and mean_iou > best_iou and misc.is_main_process():
             best_iou = mean_iou
             best_path = os.path.join(args.output, "best_model.pth")
-            torch.save(pa.module.state_dict(), best_path)
+            # 使用 pa_wo_ddp 而不是 pa.module（兼容单 GPU 和 DDP）
+            torch.save(pa_wo_ddp.state_dict(), best_path)
             print_fn(f"🎯 New best IoU={best_iou:.4f}  -> {best_path}")
         else:
             print_fn(f"No improvement this epoch (IoU={mean_iou:.4f}, best={best_iou:.4f})")

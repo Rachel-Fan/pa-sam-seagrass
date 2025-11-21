@@ -1463,7 +1463,8 @@ class LargeScaleJitter(object):
 class OnlineDataset(Dataset):
     def __init__(self, name_im_gt_list, transform=None, eval_ori_resolution=False, replace_red_with_glcm=True):
         self.transform = transform
-        self.replace_red_with_glcm = replace_red_with_glcm  # Control whether to replace Red channel
+        # self.replace_red_with_glcm = replace_red_with_glcm  # Control whether to replace Red channel
+        self.replace_red_with_glcm = bool(replace_red_with_glcm)
         self.dataset = {}
         
         # Combine different datasets into one
@@ -1501,63 +1502,166 @@ class OnlineDataset(Dataset):
     def __len__(self):
         return len(self.dataset["im_path"])
 
+    # def __getitem__(self, idx):
+    #     im_path = self.dataset["im_path"][idx]
+    #     gt_path = self.dataset["gt_path"][idx]
+    #     if len(self.dataset["im_ch4_path"]) > idx:
+    #         im_ch4_path = self.dataset["im_ch4_path"][idx]
+    #     else:
+    #         im_ch4_path = None  # Get GLCM path
+        
+    #     im = io.imread(im_path)
+    #     gt = io.imread(gt_path)
+    #     # 取路径（安全获取）
+    #     im_ch4_path = None
+    #     if ("im_ch4_path" in self.dataset) and (idx < len(self.dataset["im_ch4_path"])):
+    #         im_ch4_path = self.dataset["im_ch4_path"][idx]
+
+    #     # 是否真的需要 ch4：仅当开启 GLCM 替换红通道时才读取
+    #     use_ch4 = getattr(self, "replace_red_with_glcm", False)
+
+    #     im_ch4 = None
+    #     if use_ch4 and isinstance(im_ch4_path, str) and len(im_ch4_path) > 0:
+    #         # 如果你希望 ch4 与 im 不同，这里会读入；如果 im_ch4_path == im_path，也能正常读
+    #         im_ch4 = io.imread(im_ch4_path)
+    #     else:
+    #         im_ch4 = None  # 显式地没有 ch4
+
+    #     # —— 新增：尺寸 & 类型对齐 —— #
+    #     H, W = im.shape[:2]
+    #     h4, w4 = im_ch4.shape[:2]
+    #     if (h4 != H) or (w4 != W):
+    #         # 用最近邻，不产生小数，避免标签类纹理被平滑
+    #         im_ch4 = sk_resize(
+    #             im_ch4, (H, W), order=0, preserve_range=True, anti_aliasing=False
+    #         ).astype(im.dtype)
+    #     else:
+    #         # 保证 dtype 与 RGB 一致（通常 uint8）
+    #         if im_ch4.dtype != im.dtype:
+    #             im_ch4 = im_ch4.astype(im.dtype)
+
+    #     # Optionally replace Red channel with GLCM channel
+    #     if self.replace_red_with_glcm:
+    #         if len(im.shape) == 3 and im.shape[2] == 3:
+    #             im[:, :, 0] = im_ch4  # Replace the Red channel with GLCM
+    #         else:
+    #             raise ValueError("Expected a 3-channel RGB image")
+        
+
+    #     if len(gt.shape) > 2:
+    #         gt = gt[:, :, 0]
+    #     if len(im.shape) < 3:
+    #         im = im[:, :, np.newaxis]
+    #     if im.shape[2] == 1:
+    #         im = np.repeat(im, 3, axis=2)
+        
+    #     im = torch.tensor(im.copy(), dtype=torch.float32)
+    #     im = torch.transpose(torch.transpose(im, 1, 2), 0, 1)
+    #     gt = torch.unsqueeze(torch.tensor(gt, dtype=torch.float32), 0)
+
+    #     sample = {
+    #         "imidx": torch.from_numpy(np.array(idx)),
+    #         "image": im,
+    #         "label": gt,
+    #         "shape": torch.tensor(im.shape[-2:]),
+    #     }
+
+    #     if self.transform:
+    #         sample = self.transform(sample)
+
+    #     if self.eval_ori_resolution:
+    #         sample["ori_label"] = gt.type(torch.uint8)  # NOTE for evaluation only. No flip here
+    #         sample['ori_im_path'] = self.dataset["im_path"][idx]
+    #         sample['ori_gt_path'] = self.dataset["gt_path"][idx]
+
+    #     return sample
+
     def __getitem__(self, idx):
+        # ---- 基础路径 ----
         im_path = self.dataset["im_path"][idx]
         gt_path = self.dataset["gt_path"][idx]
-        im_ch4_path = self.dataset["im_ch4_path"][idx]  # Get GLCM path
-        
+
+        # 安全获取 ch4 路径（可能不存在）
+        im_ch4_path = None
+        if ("im_ch4_path" in self.dataset) and (idx < len(self.dataset["im_ch4_path"])):
+            im_ch4_path = self.dataset["im_ch4_path"][idx]
+
+        # ---- 读图/标注 ----
         im = io.imread(im_path)
         gt = io.imread(gt_path)
-        im_ch4 = io.imread(im_ch4_path)  # Read GLCM image
-        
-        # Ensure im_ch4 is single-channel
-        if len(im_ch4.shape) > 2:
-            im_ch4 = im_ch4[:, :, 0]
 
-        # —— 新增：尺寸 & 类型对齐 —— #
-        H, W = im.shape[:2]
-        h4, w4 = im_ch4.shape[:2]
-        if (h4 != H) or (w4 != W):
-            # 用最近邻，不产生小数，避免标签类纹理被平滑
-            im_ch4 = sk_resize(
-                im_ch4, (H, W), order=0, preserve_range=True, anti_aliasing=False
-            ).astype(im.dtype)
-        else:
+        # 训练时是否打算用 ch4 替换红通道（由 Dataset 初始化时的开关控制）
+        use_ch4_cfg = bool(getattr(self, "replace_red_with_glcm", False))
+
+        # 只有在开关打开且路径是有效字符串时才去读 ch4
+        im_ch4 = None
+        if use_ch4_cfg and isinstance(im_ch4_path, str) and len(im_ch4_path) > 0:
+            try:
+                im_ch4 = io.imread(im_ch4_path)
+            except Exception as e:
+                # 路径坏了/读失败，降级为不用 ch4，避免崩
+                im_ch4 = None
+
+        # ---- 尺寸/类型对齐（仅在 im_ch4 确实存在时才做）----
+        if im_ch4 is not None:
+            # 如果 ch4 是 3 通道，取单通道（一般 ch4 应该是单通道）
+            if im_ch4.ndim == 3 and im_ch4.shape[2] > 1:
+                im_ch4 = im_ch4[:, :, 0]
+
+            H, W = im.shape[:2]
+            h4, w4 = im_ch4.shape[:2]
+            if (h4 != H) or (w4 != W):
+                # 最近邻以避免纹理被平滑
+                im_ch4 = sk_resize(
+                    im_ch4, (H, W), order=0, preserve_range=True, anti_aliasing=False
+                )
             # 保证 dtype 与 RGB 一致（通常 uint8）
             if im_ch4.dtype != im.dtype:
                 im_ch4 = im_ch4.astype(im.dtype)
 
-        # Optionally replace Red channel with GLCM channel
-        if self.replace_red_with_glcm:
-            if len(im.shape) == 3 and im.shape[2] == 3:
-                im[:, :, 0] = im_ch4  # Replace the Red channel with GLCM
+        # ---- 可选：用 ch4 替换红通道 ----
+        # 只有当：1) 你开启了 replace_red_with_glcm；2) 成功读到了 ch4，才会替换
+        if use_ch4_cfg and (im_ch4 is not None):
+            # 如果原图是灰度，先扩到 3 通道
+            if im.ndim == 2:
+                im = im[:, :, np.newaxis]
+            if im.shape[2] == 1:
+                im = np.repeat(im, 3, axis=2)
+            # 期望 3 通道 RGB
+            if im.ndim == 3 and im.shape[2] == 3:
+                im[:, :, 0] = im_ch4  # 替换 R 通道
             else:
-                raise ValueError("Expected a 3-channel RGB image")
+                raise ValueError("Expected a 3-channel RGB image after expansion")
+        else:
+            # 没有 ch4 时，保证图像至少是 3 通道
+            if im.ndim == 2:
+                im = im[:, :, np.newaxis]
+            if im.shape[2] == 1:
+                im = np.repeat(im, 3, axis=2)
 
-        if len(gt.shape) > 2:
+        # ---- 处理 gt 到单通道 ----
+        if gt.ndim > 2:
             gt = gt[:, :, 0]
-        if len(im.shape) < 3:
-            im = im[:, :, np.newaxis]
-        if im.shape[2] == 1:
-            im = np.repeat(im, 3, axis=2)
-        
+
+        # ---- 转 tensor（C,H,W）----
         im = torch.tensor(im.copy(), dtype=torch.float32)
-        im = torch.transpose(torch.transpose(im, 1, 2), 0, 1)
-        gt = torch.unsqueeze(torch.tensor(gt, dtype=torch.float32), 0)
+        im = im.permute(2, 0, 1)  # (H,W,C) -> (C,H,W)
+        gt = torch.unsqueeze(torch.tensor(gt, dtype=torch.float32), 0)  # (1,H,W)
 
         sample = {
-            "imidx": torch.from_numpy(np.array(idx)),
+            "imidx": torch.tensor(idx),
             "image": im,
             "label": gt,
-            "shape": torch.tensor(im.shape[-2:]),
+            "shape": torch.tensor(im.shape[-2:]),  # (H,W)
         }
 
         if self.transform:
             sample = self.transform(sample)
 
         if self.eval_ori_resolution:
-            sample["ori_label"] = gt.type(torch.uint8)  # NOTE for evaluation only. No flip here
-            sample['ori_im_path'] = self.dataset["im_path"][idx]
-            sample['ori_gt_path'] = self.dataset["gt_path"][idx]
+            sample["ori_label"] = gt.type(torch.uint8)
+            sample["ori_im_path"] = im_path
+            sample["ori_gt_path"] = gt_path
 
         return sample
+
